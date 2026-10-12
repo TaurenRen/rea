@@ -141,6 +141,8 @@ const installSessionToolAvailability = (
 ) => {
   if (session === undefined) return undefined;
   const linux = process.platform === "linux";
+  const wakaruPlatforms =
+    linux || process.platform === "win32" || process.platform === "darwin";
   const linuxX64 = linux && process.arch === "x64";
   const pwntools =
     linuxX64 && isAbsolute(environment.REA_PWNTOOLS_PYTHON ?? "");
@@ -165,7 +167,8 @@ const installSessionToolAvailability = (
       browserObservationEnabled: options.browserObservation !== undefined,
       javascriptRecoveryEnabled:
         options.javascriptRecovery !== undefined ||
-        (linuxX64 && isAbsolute(environment.REA_WAKARU_COMMAND ?? "")),
+        (wakaruPlatforms &&
+          isAbsolute(environment.REA_WAKARU_COMMAND ?? "")),
       browserScenarioEnabled: options.browserScenarioCapture !== undefined,
       electronObservationEnabled: options.electronObservation !== undefined,
       electronAutomationEnabled:

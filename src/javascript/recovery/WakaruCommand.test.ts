@@ -61,6 +61,51 @@ it("preserves caller cancellation before acquiring an expired execution budget",
   ).rejects.toMatchObject({ _tag: "AnalysisCancelledError" });
 });
 
+it("runs Wakaru directly on platforms without prlimit", async () => {
+  const launched: Array<{ command: string; arguments: string[] }> = [];
+  const launcher: WakaruLauncher = async (options) => {
+    launched.push({ command: options.command, arguments: [...options.arguments] });
+    const producer = createProducer();
+    setImmediate(() => {
+      producer.stdout.end("recovered");
+      producer.stderr.end();
+      producer.emit("exit", 0, null);
+      producer.emit("close", 0, null);
+    });
+    return {
+      process: producer,
+      ownership: {
+        runId: options.runId,
+        leaderPid: 12345,
+        processGroupId: 12345,
+        expectedParentPid: process.pid,
+      },
+      cleanup: async () => ({ cleaned: true, signaled: false }),
+    };
+  };
+  await expect(
+    runWakaruCommand({
+      command: "C:\\tools\\wakaru\\wakaru.exe",
+      limiter: null,
+      arguments: ["--version"],
+      cwd: "D:\\unused",
+      environment: {},
+      deadline: Date.now() + 5_000,
+      launcher,
+    }),
+  ).resolves.toMatchObject({
+    exit_code: 0,
+    stdout: "recovered",
+    resource_limiter: "none (prlimit unavailable on this platform)",
+  });
+  expect(launched).toEqual([
+    {
+      command: "C:\\tools\\wakaru\\wakaru.exe",
+      arguments: ["--version"],
+    },
+  ]);
+});
+
 const commandFixture = (
   emit: (producer: ReturnType<typeof createProducer>) => void,
 ) => {

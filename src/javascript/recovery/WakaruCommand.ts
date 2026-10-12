@@ -26,7 +26,13 @@ import { RECOVERY_LIMITS } from "./WakaruRelease.js";
 
 const OPERATION = "recover_javascript_sources";
 const WAKARU_REQUIREMENT =
-  "Provide an absolute REA_WAKARU_COMMAND pointing to a Wakaru ^1.13.0 Linux x64 binary (verified with 1.14.0); no tool is installed by REA. See docs/javascript-recovery.md#install-wakaru.";
+  "Provide an absolute REA_WAKARU_COMMAND pointing to a Wakaru ^1.13.0 binary (verified with 1.14.0); no tool is installed by REA. See docs/javascript-recovery.md#install-wakaru.";
+
+/** Platforms that can run Wakaru directly (npm-distributed binaries exist for these);
+ *  resource-limiting via prlimit is only available on Linux x64. */
+const canRunWakaruPlatform =
+  process.platform === "linux" || process.platform === "win32" || process.platform === "darwin";
+const hasPrlimit = process.platform === "linux" && process.arch === "x64";
 
 /** Inject the owned process launcher while retaining production protocol parsing. */
 export type WakaruLauncher = (
@@ -64,8 +70,7 @@ export const resolveWakaruCommand = async (
 ) => {
   const configured = environment.REA_WAKARU_COMMAND;
   if (
-    process.platform !== "linux" ||
-    process.arch !== "x64" ||
+    !canRunWakaruPlatform ||
     configured === undefined ||
     !isAbsolute(configured)
   )
@@ -82,6 +87,16 @@ export const resolveWakaruCommand = async (
       command,
       RECOVERY_LIMITS.outputBytes,
     );
+    if (!hasPrlimit) {
+      // On Windows/macOS there is no util-linux prlimit; run Wakaru without
+      // the rlimit sandbox. The REA deadline, output-size supervisor and
+      // process-ownership cleanup still bound the run.
+      return {
+        command,
+        limiter: null,
+        ...fingerprint,
+      };
+    }
     const limiter =
       environment.REA_JAVASCRIPT_PRLIMIT_COMMAND ?? "/usr/bin/prlimit";
     if (!isAbsolute(limiter))
@@ -101,7 +116,8 @@ export const resolveWakaruCommand = async (
 
 type WakaruCommandContext = {
   command: string;
-  limiter: string;
+  /** util-linux prlimit path on Linux x64; null on platforms without prlimit. */
+  limiter: string | null;
   arguments: readonly string[];
   cwd: string;
   deadline: number;
@@ -115,17 +131,19 @@ type WakaruCommandContext = {
 export const runWakaruCommand = async (context: WakaruCommandContext) => {
   checkRecoveryDeadline(context.deadline, context.signal);
   const runId = `rea-wakaru-${randomUUID()}`;
+  const limiterArguments = context.limiter
+    ? [
+        `--as=${String(RECOVERY_LIMITS.addressSpaceBytes)}`,
+        `--fsize=${String(RECOVERY_LIMITS.outputBytes)}`,
+        "--core=0",
+        "--cpu=120",
+        "--",
+        context.command,
+      ]
+    : [];
   const spawned = await (context.launcher ?? spawnOwnedProviderProcess)({
-    command: context.limiter,
-    arguments: [
-      `--as=${String(RECOVERY_LIMITS.addressSpaceBytes)}`,
-      `--fsize=${String(RECOVERY_LIMITS.outputBytes)}`,
-      "--core=0",
-      "--cpu=120",
-      "--",
-      context.command,
-      ...context.arguments,
-    ],
+    command: context.limiter ?? context.command,
+    arguments: [...limiterArguments, ...context.arguments],
     expectedCommand: null,
     runId,
     cwd: context.cwd,
@@ -204,6 +222,6 @@ export const runWakaruCommand = async (context: WakaruCommandContext) => {
     stderr: snapshot.stderr.text,
     command: context.command,
     arguments: [...context.arguments],
-    resource_limiter: context.limiter,
+    resource_limiter: context.limiter ?? "none (prlimit unavailable on this platform)",
   };
 };
